@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name        Batch Balance
 // @namespace   https://github.com/tobytorn
-// @description 帮派调账工具 (不支持 TornPDA)
+// @description 帮派调账工具 (不支持移动版网页)
 // @author      tobytorn [1617955]
 // @match       https://www.torn.com/factions.php?step=your*
-// @version     1.0.0
+// @version     1.0.1-dev
 // @grant       GM_getValue
 // @grant       GM.getValue
 // @grant       GM_setValue
@@ -110,6 +110,9 @@ addStyle(`
     color: green;
     padding-left: 6px;
   }
+  #batbal-ctrl-tab {
+    cursor: pointer;
+  }
 `);
 
 const CONTROLLER_HTML = `
@@ -119,14 +122,14 @@ const CONTROLLER_HTML = `
       <table style="margin: auto">
         <thead>
           <tr>
-            <th><span class="batbal-ctrl-detail-cached">缓存</span>ID</th>
-            <th><span class="batbal-ctrl-detail-cached">缓存</span>Name</th>
-            <th><span class="batbal-ctrl-detail-cached">缓存</span>金额</th>
+            <th><span class="batbal-ctrl-detail-cached" style="display: none">缓存</span>ID</th>
+            <th><span class="batbal-ctrl-detail-cached" style="display: none">缓存</span>Name</th>
+            <th><span class="batbal-ctrl-detail-cached" style="display: none">缓存</span>金额</th>
           </tr>
         </thead>
         <tbody></tbody>
       </table>
-      <div id="batbal-ctrl-detail-link">
+      <div id="batbal-ctrl-detail-link" style="display: none">
         <a target="_blank">点击这里继续进行缓存中的调账</a>
       </div>
     </div>
@@ -164,7 +167,7 @@ function renderLinkOnOcPage() {
       return;
     }
     clearInterval(interval);
-    const $income = $('.organize-wrap .success .make-wrap');
+    const $income = $('.organize-wrap .success .make-wrap').last();
     const incomeMatch = ($income.text() || '').match(/\$([\d,]+) made/i);
     const $userLinks = $income.nextAll().find(`a[href*="${PROFILE_HREF_PREFIX}"]`);
     if (!incomeMatch || $userLinks.length === 0) {
@@ -186,12 +189,17 @@ function renderLinkOnOcPage() {
 }
 
 function parseAction(params) {
-  const uids = (params.get('batbal_uids') || '').split(',');
-  if (uids.length === 0 || uids.some((x) => !x.match(/^\d+$/))) {
+  const paramUids = params.get('batbal_uids');
+  const paramAmounts = params.get('batbal_amounts');
+  if (!paramUids || !paramAmounts) {
+    throw new Error('请提供参数 batbal_uids 和 batbal_amounts 以开始调账');
+  }
+  const uids = paramUids.split(',');
+  const amounts = paramAmounts.split(',');
+  if (uids.some((x) => !x.match(/^\d+$/))) {
     throw new Error('参数 batbal_uids 不合法');
   }
-  const amounts = (params.get('batbal_amounts') || '').split(',');
-  if (amounts.length === 0 || amounts.some((x) => !x.match(/^[+-]?\d{1,11}$/)) || amounts.length < uids.length) {
+  if (amounts.some((x) => !x.match(/^[+-]?\d{1,11}$/)) || amounts.length < uids.length) {
     throw new Error('参数 batbal_amounts 不合法');
   }
   return {
@@ -207,16 +215,16 @@ function updateStatus(s) {
   }
 }
 
-async function renderController() {
+function getParams() {
   const URL_PREFIX = 'https://www.torn.com/factions.php?step=your#/tab=controls';
   if (!location.href.startsWith(URL_PREFIX)) {
     return;
   }
+  return new URLSearchParams(location.href.slice(URL_PREFIX.length + 1));
+}
+
+async function renderController(params) {
   const storedAction = await GM_getValue(GM_VALUE_KEY, null);
-  const params = new URLSearchParams(location.href.slice(URL_PREFIX.length + 1));
-  if (storedAction === null && (params.get('batbal_uids') === null || params.get('batbal_amounts') === null)) {
-    return;
-  }
   const $controlsWrap = $('.faction-controls-wrap');
   $controlsWrap.before(CONTROLLER_HTML);
   $('#batbal-ctrl-show-detail').on('click', function () {
@@ -235,10 +243,16 @@ async function renderController() {
       alert('缓存已删除，请刷新页面');
     }
   });
+  if (storedAction === null && (params.get('batbal_uids') === null || params.get('batbal_amounts') === null)) {
+    $('#batbal-ctrl').hide();
+  }
+  $controlsWrap.find('.control-tabs').append('<li><a id="batbal-ctrl-tab">批量调账</a></li>');
+  $('#batbal-ctrl-tab').on('click', async function () {
+    $('#batbal-ctrl').show();
+  });
   if (storedAction) {
     $('#batbal-ctrl-clear-cache').removeAttr('disabled');
   }
-  return params;
 }
 
 async function checkAction(action) {
@@ -371,11 +385,17 @@ async function main() {
   try {
     renderLinkOnOcPage();
 
+    const params = getParams();
+    if (!params) {
+      return;
+    }
     const uidNameMap = await getUidNameMap();
-    const params = await renderController();
+    await renderController(params);
 
     const storedAction = await GM_getValue(GM_VALUE_KEY, null);
     if (storedAction) {
+      $('#batbal-ctrl-detail-link').show();
+      $('.batbal-ctrl-detail-cached').show();
       renderDetails(storedAction, uidNameMap);
       const storedUids = storedAction.uidAmounts.map(([uid]) => uid);
       const storedAmounts = storedAction.uidAmounts.map(([, amount]) => amount);
