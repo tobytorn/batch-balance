@@ -362,6 +362,13 @@ async function start(action, uidNameMap) {
     $moneyWrap.find('.give-block label[for="give-money"]').hide();
     $('#batbal-ctrl-start').attr('disabled', true);
     $('#batbal-ctrl-clear-cache').attr('disabled', true);
+    // Move the "CONFIRM" button to the same position as the "ADD MONEY" button
+    $moneyWrap.find('.give-block').css('position', 'relative');
+    $moneyWrap
+      .find('.give-block .action-confirm .btn-wrap')
+      .css('position', 'absolute')
+      .css('right', '0')
+      .css('bottom', '10px');
 
     while (action.next < action.uidAmounts.length) {
       updateStatus(`请确认第 ${action.next + 1} 个人的调账，共计 ${action.uidAmounts.length} 人`);
