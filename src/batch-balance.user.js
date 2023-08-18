@@ -182,7 +182,7 @@ function renderLinkOnOcPage() {
     const url =
       `https://www.torn.com/factions.php?step=your#/tab=controls` +
       `&batbal_uids=${uids.join(',')}&batbal_amounts=${new Array(uids.length)
-        .fill(((income * (1 - OC_TAX)) / uids.length).toFixed(0))
+        .fill(Math.floor((income * (1 - OC_TAX)) / uids.length))
         .join(',')}`;
     $income.append(`<p><a href="${url}" target="_blank">去调账</a></p>`);
   }, 1000);
