@@ -274,7 +274,8 @@ async function storeAction(action) {
   await GM_setValue(GM_VALUE_KEY, action);
 }
 
-async function getUidNameMap() {
+// @returns Record<string, { name: string, isInFaction: boolean }>
+async function getUidMap() {
   return new Promise((resolve) => {
     const interval = setInterval(function () {
       const $depositors = $('.money-wrap .user-info-list-wrap .depositor');
@@ -286,7 +287,10 @@ async function getUidNameMap() {
         const $name = $(this).find(`a[href*="${PROFILE_HREF_PREFIX}"]`).first();
         if ($name.length > 0) {
           const uid = ($name.attr('href') || '').split(PROFILE_HREF_PREFIX)[1];
-          map[uid] = $name.text().trim();
+          map[uid] = {
+            name: $name.text().trim(),
+            isInFaction: !$(this).hasClass('inactive'),
+          };
         }
       });
       clearInterval(interval);
@@ -295,21 +299,31 @@ async function getUidNameMap() {
   });
 }
 
-function renderDetails(action, uidNameMap) {
+function renderDetails(action, uidMap) {
   const $tbody = $('#batbal-ctrl-detail tbody');
   $tbody.empty();
+  let outsideCount = 0;
   action.uidAmounts.forEach(([uid, amount], i) => {
     const amountClass = amount >= 0 ? 't-green' : 't-red';
     const trClass = i < action.next ? 'batbal-done' : '';
-    const name = uidNameMap[uid] || '';
+    const uidInfo = uidMap[uid] || {};
+    const name = uidInfo.name || '';
+    const isInFaction = uidInfo.isInFaction || false;
+    if (!isInFaction) {
+      outsideCount++;
+    }
+    const uidHtml = `${uid}${isInFaction ? '' : ' <span class="t-red">(外帮)</span>'}`;
     $tbody.append(
-      `<tr class="${trClass}"><td>${uid}</td><td>${name}</td><td class="${amountClass}">${formatAmount(amount)}</td>`,
+      `<tr class="${trClass}"><td>${uidHtml}</td><td>${name}</td><td class="${amountClass}">${formatAmount(
+        amount,
+      )}</td>`,
     );
   });
   const total = action.uidAmounts.reduce((v, [, amount]) => v + amount, 0);
   const totalClass = total >= 0 ? 't-green' : 't-red';
   $('#batbal-ctrl-summary').html(`
     总人数: ${action.uidAmounts.length},
+    ${outsideCount > 0 ? `<span class="t-red">外帮人数: ${outsideCount}</span>,` : ''}
     总金额: <span class="${totalClass}">${formatAmount(total)}</span>
   `);
 }
@@ -354,7 +368,7 @@ async function closePrompt($parent) {
   }
 }
 
-async function start(action, uidNameMap) {
+async function start(action, uidMap) {
   try {
     $('.faction-controls-wrap .control-tabs').addClass('batbal-overlay');
     $('.faction-controls-wrap .point-wrap').addClass('batbal-overlay');
@@ -373,7 +387,8 @@ async function start(action, uidNameMap) {
     while (action.next < action.uidAmounts.length) {
       updateStatus(`请确认第 ${action.next + 1} 个人的调账，共计 ${action.uidAmounts.length} 人`);
       const [uid, amount] = action.uidAmounts[action.next];
-      const name = uidNameMap[uid] || '未知玩家';
+      const uidInfo = uidMap[uid] || {};
+      const name = uidInfo.name || '未知玩家';
       await addMoney(uid, name, amount);
       action.next++;
       await storeAction(action);
@@ -396,14 +411,14 @@ async function main() {
     if (!params) {
       return;
     }
-    const uidNameMap = await getUidNameMap();
+    const uidMap = await getUidMap();
     await renderController(params);
 
     const storedAction = await GM_getValue(GM_VALUE_KEY, null);
     if (storedAction) {
       $('#batbal-ctrl-detail-link').show();
       $('.batbal-ctrl-detail-cached').show();
-      renderDetails(storedAction, uidNameMap);
+      renderDetails(storedAction, uidMap);
       const storedUids = storedAction.uidAmounts.map(([uid]) => uid);
       const storedAmounts = storedAction.uidAmounts.map(([, amount]) => amount);
       const url =
@@ -416,9 +431,9 @@ async function main() {
     await checkAction(action);
     $('#batbal-ctrl-detail-link').hide();
     $('.batbal-ctrl-detail-cached').hide();
-    renderDetails(action, uidNameMap);
+    renderDetails(action, uidMap);
     $('#batbal-ctrl-start').removeAttr('disabled');
-    $('#batbal-ctrl-start').on('click', () => start(action, uidNameMap));
+    $('#batbal-ctrl-start').on('click', () => start(action, uidMap));
   } catch (err) {
     updateStatus(err);
   }
