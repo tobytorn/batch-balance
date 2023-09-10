@@ -4,7 +4,7 @@
 // @description 帮派调账工具 (不支持移动版网页)
 // @author      tobytorn [1617955]
 // @match       https://www.torn.com/factions.php?step=your*
-// @version     1.0.1
+// @version     1.1.0
 // @grant       GM_getValue
 // @grant       GM.getValue
 // @grant       GM_setValue
