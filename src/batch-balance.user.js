@@ -80,7 +80,7 @@ addStyle(`
     text-align: center;
     line-height: 16px;
   }
-  #batbal-ctrl-detail-link,
+  #batbal-ctrl-detail > :not(:first-child),
   #batbal-ctrl > :not(:first-child) {
     margin-top: 10px;
   }
@@ -129,8 +129,11 @@ const CONTROLLER_HTML = `
         </thead>
         <tbody></tbody>
       </table>
-      <div id="batbal-ctrl-detail-link" style="display: none">
+      <div id="batbal-ctrl-detail-continue" style="display: none">
         <a target="_blank">点击这里继续进行缓存中的调账</a>
+      </div>
+      <div id="batbal-ctrl-detail-roll-back" style="display: none">
+        <a target="_blank">调错了？点击这里进行回滚</a>
       </div>
     </div>
     <div id="batbal-ctrl-summary"></div>
@@ -149,6 +152,15 @@ function formatAmount(v) {
 
 async function sleep(t) {
   await new Promise((r) => setTimeout(r, t));
+}
+
+function buildUrl(uidAmounts) {
+  const uids = uidAmounts.map(([uid]) => uid);
+  const amounts = uidAmounts.map(([, amount]) => amount.toString());
+  return (
+    `https://www.torn.com/factions.php?step=your#/tab=controls` +
+    `&batbal_uids=${uids.join(',')}&batbal_amounts=${amounts.join(',')}`
+  );
 }
 
 function renderLinkOnOcPage() {
@@ -179,11 +191,8 @@ function renderLinkOnOcPage() {
         return $(this).attr('href').split(PROFILE_HREF_PREFIX)[1];
       })
       .get();
-    const url =
-      `https://www.torn.com/factions.php?step=your#/tab=controls` +
-      `&batbal_uids=${uids.join(',')}&batbal_amounts=${new Array(uids.length)
-        .fill(Math.floor((income * (1 - OC_TAX)) / uids.length))
-        .join(',')}`;
+    const amount = Math.floor((income * (1 - OC_TAX)) / uids.length);
+    const url = buildUrl(uids.map((uid) => [uid, amount]));
     $income.append(`<p><a href="${url}" target="_blank">去调账</a></p>`);
   }, 1000);
 }
@@ -326,6 +335,11 @@ function renderDetails(action, uidMap) {
     ${outsideCount > 0 ? `<span class="t-red">外帮人数: ${outsideCount}</span>,` : ''}
     总金额: <span class="${totalClass}">${formatAmount(total)}</span>
   `);
+  const rollBackUrl = buildUrl(
+    action.uidAmounts.slice(0, action.next || action.uidAmounts.length).map(([uid, amount]) => [uid, -amount]),
+  );
+  $('#batbal-ctrl-detail-roll-back').show();
+  $('#batbal-ctrl-detail-roll-back a').attr('href', rollBackUrl);
 }
 
 async function addMoney(uid, name, diff) {
@@ -393,6 +407,7 @@ async function start(action, uidMap) {
       action.next++;
       await storeAction(action);
       await closePrompt($moneyWrap);
+      renderDetails(action, uidMap);
     }
 
     $moneyWrap.addClass('batbal-overlay');
@@ -416,20 +431,15 @@ async function main() {
 
     const storedAction = await GM_getValue(GM_VALUE_KEY, null);
     if (storedAction) {
-      $('#batbal-ctrl-detail-link').show();
+      $('#batbal-ctrl-detail-continue').show();
+      $('#batbal-ctrl-detail-continue a').attr('href', buildUrl(storedAction.uidAmounts));
       $('.batbal-ctrl-detail-cached').show();
       renderDetails(storedAction, uidMap);
-      const storedUids = storedAction.uidAmounts.map(([uid]) => uid);
-      const storedAmounts = storedAction.uidAmounts.map(([, amount]) => amount);
-      const url =
-        `https://www.torn.com/factions.php?step=your#/tab=controls` +
-        `&batbal_uids=${storedUids.join(',')}&batbal_amounts=${storedAmounts.join(',')}`;
-      $('#batbal-ctrl-detail-link a').attr('href', url);
     }
 
     const action = parseAction(params);
     await checkAction(action);
-    $('#batbal-ctrl-detail-link').hide();
+    $('#batbal-ctrl-detail-continue').hide();
     $('.batbal-ctrl-detail-cached').hide();
     renderDetails(action, uidMap);
     $('#batbal-ctrl-start').removeAttr('disabled');
