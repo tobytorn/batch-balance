@@ -1,60 +1,51 @@
 // ==UserScript==
 // @name        Batch Balance
 // @namespace   https://github.com/tobytorn
-// @description 帮派调账工具 (不支持移动版网页)
+// @description Distribute money or change balances for multiple faction members (Not supported on mobile)
 // @author      tobytorn [1617955]
 // @match       https://www.torn.com/factions.php?step=your*
-// @version     1.1.0
+// @version     2.0.0
 // @grant       GM_getValue
-// @grant       GM.getValue
 // @grant       GM_setValue
-// @grant       GM.setValue
+// @grant       GM_addStyle
 // @supportURL  https://github.com/tobytorn/batch-balance
 // @license     MIT
 // @require     https://unpkg.com/jquery@3.7.0/dist/jquery.min.js
 // ==/UserScript==
 
-// 使用说明：
-// 在调账界面 URL (https://www.torn.com/factions.php?step=your#/tab=controls) 的 # 之后添加如下参数以开启批量调账
-// batbal_uids    逗号分隔的用户 ID
-// batbal_amounts 逗号分隔的调账金额
+// Usage:
+// Add the following parameters to the URL of the control page (https://www.torn.com/factions.php?step=your#/tab=controls) to enable this script
+// batbal_uids    Comma-separated user IDs
+// batbal_amounts Comma-separated amounts
+// batbal_action  [Optional] "add" for adding to balance (default), or "give" for giving money
+// batbal_asset   [Optional] "money" (default) or "points"
 //
-// 例如: 下边这个 URL 会给 bingri 增加 120，给 tobytorn 减少 250，给 Duke 增加 1.5k
-//   https://www.torn.com/factions.php?step=your#/tab=controls&batbal_uids=1523812,1617955,4&batbal_amounts=120,-250,1500
+// Example: The following URL will add 120 to Leslie, subtract 250 from tobytorn, and add 1.5k to Duke
+//   https://www.torn.com/factions.php?step=your#/tab=controls&batbal_uids=15,1617955,4&batbal_amounts=120,-250,1500
 
 'use strict';
 
-const OC_TAX = 0;
+const ACTION_INTERVAL_MS = 1000;
 const GM_VALUE_KEY = 'batbal-action';
 const PROFILE_HREF_PREFIX = 'profiles.php?XID=';
+const ACTION_SPECS = {
+  give: {
+    summary: 'Give',
+    text: 'Give',
+    waitingText: 'Giving',
+    bodyParam: 'giveMoney',
+  },
+  add: {
+    summary: 'Add to balance',
+    text: 'Add',
+    waitingText: 'Adding',
+    bodyParam: 'addToBalance',
+  },
+};
 
 const $ = window.jQuery;
-if (GM) {
-  window.GM_getValue = GM.getValue;
-  window.GM_setValue = GM.setValue;
-}
 
-function addStyle(css) {
-  const STYLE_ID = 'BATBAL-GLOBAL-STYLE';
-  const style =
-    document.getElementById(STYLE_ID) ||
-    (function () {
-      const style = document.createElement('style');
-      style.id = STYLE_ID;
-      document.head.appendChild(style);
-      return style;
-    })();
-  css.split(/}\s*\n/).forEach((s) => {
-    if (s.trim()) {
-      style.sheet.insertRule(s + '}');
-    }
-  });
-}
-
-addStyle(`
-  .batbal-focus-btn {
-    border: 2px solid red !important;
-  }
+const STYLE = `
   .batbal-overlay {
     position: relative;
   }
@@ -68,13 +59,9 @@ addStyle(`
     height: 100%;
     z-index: 900000;
   }
-`);
-
-addStyle(`
   #batbal-ctrl {
     margin: 10px 0;
     padding: 10px;
-    background-color: #f2f2f2;
     border-radius: 5px;
     background-color: var(--default-bg-panel-color);
     text-align: center;
@@ -94,11 +81,15 @@ addStyle(`
   #batbal-ctrl button {
     margin: 0 4px;
   }
+  #batbal-ctrl table {
+    margin: 0 auto;
+  }
   #batbal-ctrl th {
     font-weight: bold;
   }
   #batbal-ctrl th,
   #batbal-ctrl td {
+    color: inherit;
     padding: 5px;
     border: 1px solid #ccc;
   }
@@ -110,40 +101,63 @@ addStyle(`
     color: green;
     padding-left: 6px;
   }
-  #batbal-ctrl-tab {
-    cursor: pointer;
-  }
-`);
+`;
 
 const CONTROLLER_HTML = `
   <div id="batbal-ctrl">
-    <div id="batbal-ctrl-title">批量调账</div>
-    <div id="batbal-ctrl-detail" style="display: none">
-      <table style="margin: auto">
+    <div id="batbal-ctrl-title">Batch Balance</div>
+    <div>
+      <table>
         <thead>
           <tr>
-            <th><span class="batbal-ctrl-detail-cached" style="display: none">缓存</span>ID</th>
-            <th><span class="batbal-ctrl-detail-cached" style="display: none">缓存</span>Name</th>
-            <th><span class="batbal-ctrl-detail-cached" style="display: none">缓存</span>金额</th>
+            <th colspan="2">Summary</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th>Action</th>
+            <td id="batbal-ctrl-summary-action-type">-</td>
+          </tr>
+          <tr>
+            <th>Asset Type</th>
+            <td id="batbal-ctrl-summary-asset-type">-</td>
+          </tr>
+          <tr>
+            <th>Player Count</th>
+            <td id="batbal-ctrl-summary-player-count">-</td>
+          </tr>
+          <tr>
+            <th>Player Not in Faction</th>
+            <td><span id="batbal-ctrl-summary-player-not-in-faction">-</span></td>
+          </tr>
+          <tr>
+            <th>Total Amount</th>
+            <td><span id="batbal-ctrl-summary-total-amount">-</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <div>
+      <button id="batbal-ctrl-start" class="torn-btn" disabled>Start</button>
+      <button id="batbal-ctrl-show-detail" class="torn-btn">Show details</button>
+      <button id="batbal-ctrl-hide-detail" class="torn-btn" style="display: none">Hide details</button>
+      <button id="batbal-ctrl-clear-data" class="torn-btn" disabled>Clear data</button>
+    </div>
+    <button id="batbal-ctrl-submit" class="torn-btn" style="display: none" disabled></button>
+    <div>Status: <span id="batbal-ctrl-status"></span></div>
+    <div id="batbal-ctrl-detail" style="display: none">
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th>
+            <th>Name</th>
+            <th>Amount</th>
+            <th>Note</th>
           </tr>
         </thead>
         <tbody></tbody>
       </table>
-      <div id="batbal-ctrl-detail-continue" style="display: none">
-        <a target="_blank">点击这里继续进行缓存中的调账</a>
-      </div>
-      <div id="batbal-ctrl-detail-roll-back" style="display: none">
-        <a target="_blank">调错了？点击这里进行回滚</a>
-      </div>
     </div>
-    <div id="batbal-ctrl-summary"></div>
-    <div>
-      <button id="batbal-ctrl-start" class="torn-btn" disabled>开始调账</button>
-      <button id="batbal-ctrl-show-detail" class="torn-btn">显示详情</button>
-      <button id="batbal-ctrl-hide-detail" class="torn-btn" style="display: none">隐藏详情</button>
-      <button id="batbal-ctrl-clear-cache" class="torn-btn" disabled>清除缓存</button>
-    </div>
-    <div>当前状态: <span id="batbal-ctrl-status"></span></div>
   </div>`;
 
 function formatAmount(v) {
@@ -154,87 +168,104 @@ async function sleep(t) {
   await new Promise((r) => setTimeout(r, t));
 }
 
-function buildUrl(uidAmounts) {
-  const uids = uidAmounts.map(([uid]) => uid);
-  const amounts = uidAmounts.map(([, amount]) => amount.toString());
-  return (
-    `https://www.torn.com/factions.php?step=your#/tab=controls` +
-    `&batbal_uids=${uids.join(',')}&batbal_amounts=${amounts.join(',')}`
-  );
+// Copied from https://stackoverflow.com/a/25490531
+function getCookie(name) {
+  return document.cookie.match('(^|;)\\s*' + name + '\\s*=\\s*([^;]+)')?.pop() || '';
 }
 
-function renderLinkOnOcPage() {
-  const URL_PREFIX = 'https://www.torn.com/factions.php?step=your#/tab=crimes&';
-  if (!location.href.startsWith(URL_PREFIX)) {
-    return;
-  }
-  const params = new URLSearchParams(location.href.slice(URL_PREFIX.length));
-  const crimeId = params.get('crimeID');
-  if (crimeId === null) {
-    return;
-  }
-  const interval = setInterval(function () {
-    const $title = $('.organize-wrap div[role="heading"]');
-    if ($title.length === 0) {
-      return;
-    }
-    clearInterval(interval);
-    const $income = $('.organize-wrap .success .make-wrap').last();
-    const incomeMatch = ($income.text() || '').match(/\$([\d,]+) made/i);
-    const $userLinks = $income.nextAll().find(`a[href*="${PROFILE_HREF_PREFIX}"]`);
-    if (!incomeMatch || $userLinks.length === 0) {
-      return;
-    }
-    const income = parseInt(incomeMatch[1].replace(/,/g, ''));
-    const uids = $userLinks
-      .map(function () {
-        return $(this).attr('href').split(PROFILE_HREF_PREFIX)[1];
-      })
-      .get();
-    const amount = Math.floor((income * (1 - OC_TAX)) / uids.length);
-    const url = buildUrl(uids.map((uid) => [uid, amount]));
-    $income.append(`<p><a href="${url}" target="_blank">去调账</a></p>`);
-  }, 1000);
+function getParams() {
+  const params = new URLSearchParams(location.hash.slice(1));
+  return params.get('/tab') === 'controls' ? params : null;
 }
 
-function parseAction(params) {
+function storeAction(action) {
+  GM_setValue(GM_VALUE_KEY, action);
+}
+
+function parseAction() {
+  const params = getParams();
+  if (!params) {
+    return null;
+  }
   const paramUids = params.get('batbal_uids');
   const paramAmounts = params.get('batbal_amounts');
-  if (!paramUids || !paramAmounts) {
-    throw new Error('请提供参数 batbal_uids 和 batbal_amounts 以开始调账');
+  if (paramUids === null || paramAmounts === null) {
+    return null;
   }
   const uids = paramUids.split(',');
   const amounts = paramAmounts.split(',');
-  if (uids.some((x) => !x.match(/^\d+$/))) {
-    throw new Error('参数 batbal_uids 不合法');
+  if (amounts.length !== uids.length) {
+    return { error: 'Param "batbal_uids" and "batbal_amounts" have different lengths' };
   }
-  if (amounts.some((x) => !x.match(/^[+-]?\d{1,11}$/)) || amounts.length < uids.length) {
-    throw new Error('参数 batbal_amounts 不合法');
+  if (uids.length === 0 || uids.some((x) => !x.match(/^\d+$/))) {
+    return { error: 'Param "batbal_uids" is invalid' };
+  }
+  if (amounts.length === 0 || amounts.some((x) => !x.match(/^[+-]?\d{1,11}$/))) {
+    return { error: 'Param "batbal_amounts" is invalid' };
+  }
+  const actionType = params.get('batbal_action') ?? 'add';
+  if (!['give', 'add'].includes(actionType)) {
+    return { error: 'Param "batbal_action" is invalid' };
+  }
+  const assetType = params.get('batbal_asset') ?? 'money';
+  if (!['money', 'points'].includes(assetType)) {
+    return { error: 'Param "batbal_asset" is invalid' };
   }
   return {
     uidAmounts: uids.map((uid, i) => [uid, parseInt(amounts[i])]).filter(([, amount]) => amount !== 0),
     next: 0,
+    actionType,
+    assetType,
   };
 }
 
-function updateStatus(s) {
-  $('#batbal-ctrl-status').text(s);
-  if (s instanceof Error) {
-    $('#batbal-ctrl-status').css('color', 'red');
+function checkAction(parsedAction, storedAction) {
+  if (parsedAction && storedAction) {
+    if (
+      JSON.stringify(parsedAction.uidAmounts) !== JSON.stringify(storedAction.uidAmounts) ||
+      parsedAction.actionType !== storedAction.actionType ||
+      parsedAction.assetType !== storedAction.assetType
+    ) {
+      throw new Error(
+        "An unfinished Batch Balance operation was found that doesn't match the URL parameters. " +
+          'Click "Show details" to view the pending operation. ' +
+          'To resume it, clear the URL parameters and refresh the page.' +
+          'To discard it, click "Clear data" and refresh the page.',
+      );
+    }
   }
+  return storedAction ?? parsedAction;
 }
 
-function getParams() {
-  const URL_PREFIX = 'https://www.torn.com/factions.php?step=your#/tab=controls';
-  if (!location.href.startsWith(URL_PREFIX)) {
-    return;
-  }
-  return new URLSearchParams(location.href.slice(URL_PREFIX.length + 1));
+/** @returns Promise<Record<string, { name: string, isInFaction: boolean }>> */
+async function getUidMap() {
+  return new Promise((resolve) => {
+    const interval = setInterval(function () {
+      const $depositors = $('.money___aACfM .userListWrap___voEX8 .userInfoWrap___rjWOK');
+      if ($depositors.length === 0) {
+        return;
+      }
+      const map = {};
+      $depositors.each(function () {
+        const $name = $(this).find(`a[href*="${PROFILE_HREF_PREFIX}"]`).first();
+        if ($name.length > 0) {
+          const uid = ($name.attr('href') || '').split(PROFILE_HREF_PREFIX)[1];
+          map[uid] = {
+            name: $name.text().trim(),
+            isInFaction: !$(this).hasClass('inactive___Hd0EQ'),
+          };
+        }
+      });
+      clearInterval(interval);
+      resolve(map);
+    }, 2000);
+  });
 }
 
-async function renderController(params) {
-  const storedAction = await GM_getValue(GM_VALUE_KEY, null);
+function renderController() {
+  GM_addStyle(STYLE);
   const $controlsWrap = $('.faction-controls-wrap');
+  $controlsWrap.addClass('batbal-overlay');
   $controlsWrap.before(CONTROLLER_HTML);
   $('#batbal-ctrl-show-detail').on('click', function () {
     $('#batbal-ctrl-detail').show();
@@ -246,66 +277,25 @@ async function renderController(params) {
     $('#batbal-ctrl-show-detail').show();
     $(this).hide();
   });
-  $('#batbal-ctrl-clear-cache').on('click', async function () {
-    if (confirm('确认删除缓存中的调账数据吗？该操作无法撤销')) {
-      await storeAction(null);
-      alert('缓存已删除，请刷新页面');
+  $('#batbal-ctrl-clear-data').on('click', function () {
+    if (
+      confirm(
+        'Are you sure you want to delete the saved Batch Balance data? ' +
+          'This will remove any unfinished operations and cannot be undone.',
+      )
+    ) {
+      storeAction(null);
+      $('#batbal-ctrl').hide();
+      alert('Saved data has been deleted, please refresh the page');
     }
   });
-  if (storedAction === null && (params.get('batbal_uids') === null || params.get('batbal_amounts') === null)) {
-    $('#batbal-ctrl').hide();
-  }
-  $controlsWrap.find('.control-tabs').append('<li><a id="batbal-ctrl-tab">批量调账</a></li>');
-  $('#batbal-ctrl-tab').on('click', async function () {
-    $('#batbal-ctrl').show();
-  });
-  if (storedAction) {
-    $('#batbal-ctrl-clear-cache').removeAttr('disabled');
-  }
 }
 
-async function checkAction(action) {
-  const storedAction = await GM_getValue(GM_VALUE_KEY, null);
-  if (storedAction) {
-    // Compare action and storedAction
-    if (JSON.stringify(action.uidAmounts) !== JSON.stringify(storedAction.uidAmounts)) {
-      throw new Error('缓存中有未完成的其他调账记录，与当前 URL 中的信息不符，点击 "查看详情" 以显示缓存数据');
-    } else {
-      action.next = storedAction.next;
-      updateStatus(`根据缓存记录，之前已完成 ${action.next} / ${action.uidAmounts.length} 人`);
-    }
-  } else {
-    updateStatus('准备就绪');
+function updateStatus(s) {
+  $('#batbal-ctrl-status').text(String(s));
+  if (s instanceof Error) {
+    $('#batbal-ctrl-status').css('color', 'red');
   }
-}
-
-async function storeAction(action) {
-  await GM_setValue(GM_VALUE_KEY, action);
-}
-
-// @returns Record<string, { name: string, isInFaction: boolean }>
-async function getUidMap() {
-  return new Promise((resolve) => {
-    const interval = setInterval(function () {
-      const $depositors = $('.money-wrap .user-info-list-wrap .depositor');
-      if ($depositors.length === 0) {
-        return;
-      }
-      const map = {};
-      $depositors.each(function () {
-        const $name = $(this).find(`a[href*="${PROFILE_HREF_PREFIX}"]`).first();
-        if ($name.length > 0) {
-          const uid = ($name.attr('href') || '').split(PROFILE_HREF_PREFIX)[1];
-          map[uid] = {
-            name: $name.text().trim(),
-            isInFaction: !$(this).hasClass('inactive'),
-          };
-        }
-      });
-      clearInterval(interval);
-      resolve(map);
-    }, 2000);
-  });
 }
 
 function renderDetails(action, uidMap) {
@@ -321,98 +311,96 @@ function renderDetails(action, uidMap) {
     if (!isInFaction) {
       outsideCount++;
     }
-    const uidHtml = `${uid}${isInFaction ? '' : ' <span class="t-red">(外帮)</span>'}`;
-    $tbody.append(
-      `<tr class="${trClass}"><td>${uidHtml}</td><td>${name}</td><td class="${amountClass}">${formatAmount(
-        amount,
-      )}</td>`,
-    );
+    $tbody.append(`<tr class="${trClass}">
+      <td>${uid}</td>
+      <td>${name}</td>
+      <td><span class="${amountClass}">${formatAmount(amount)}</span></td>
+      <td><span class="${!isInFaction ? 't-red' : ''}">${!isInFaction ? 'Not in faction' : ''}</span></td>
+    </tr>`);
   });
   const total = action.uidAmounts.reduce((v, [, amount]) => v + amount, 0);
   const totalClass = total >= 0 ? 't-green' : 't-red';
-  $('#batbal-ctrl-summary').html(`
-    总人数: ${action.uidAmounts.length},
-    ${outsideCount > 0 ? `<span class="t-red">外帮人数: ${outsideCount}</span>,` : ''}
-    总金额: <span class="${totalClass}">${formatAmount(total)}</span>
-  `);
-  const rollBackUrl = buildUrl(
-    action.uidAmounts.slice(0, action.next || action.uidAmounts.length).map(([uid, amount]) => [uid, -amount]),
-  );
-  $('#batbal-ctrl-detail-roll-back').show();
-  $('#batbal-ctrl-detail-roll-back a').attr('href', rollBackUrl);
+  const actionSpec = ACTION_SPECS[action.actionType];
+  $('#batbal-ctrl-summary-action-type').text(actionSpec.summary);
+  $('#batbal-ctrl-summary-asset-type').text(action.assetType);
+  $('#batbal-ctrl-summary-player-count').text(action.uidAmounts.length);
+  $('#batbal-ctrl-summary-player-not-in-faction')
+    .text(outsideCount)
+    .toggleClass('t-red', outsideCount > 0);
+  $('#batbal-ctrl-summary-total-amount').text(formatAmount(total)).addClass(totalClass);
+  updateStatus(`Progress: ${action.next} / ${action.uidAmounts.length} done`);
 }
 
-async function addMoney(uid, name, diff) {
-  const $giveBlock = $('.money-wrap .give-block');
-  $giveBlock.find('input#money-user').val(`${name} [${uid}]`);
-  $giveBlock.find('.input-money-group input').val(diff);
-  $giveBlock.find('#add-to-balance-money').trigger('click');
-  $giveBlock.find('button').addClass('batbal-focus-btn').removeClass('disabled').removeAttr('disabled');
+async function addMoney({ uid, name, amount, actionType, assetType }) {
+  const $submit = $('#batbal-ctrl-submit');
+  $submit.show();
+  const actionSpec = ACTION_SPECS[actionType];
+  const textSuffix = ` ${assetType}: ${name} [${uid}] ${formatAmount(amount)}`;
+  const queryParam = {
+    money: 'factionsGiveMoney',
+    points: 'factionsGivePoints',
+  }[assetType];
+  $submit.text(`${actionSpec.text} ${textSuffix}`);
+  $submit.prop('disabled', false);
   return new Promise((resolve, reject) => {
-    const resultObserver = new MutationObserver(function () {
-      const $result = $giveBlock.find('.result span.msg-result');
-      if ($result.length > 0 && $result.is(':visible')) {
-        resultObserver.disconnect();
-        $giveBlock.find('button').removeClass('batbal-focus-btn');
-        if ($result.hasClass('t-green')) {
+    $submit.on('click', async () => {
+      try {
+        $submit.off('click');
+        $submit.text(`${actionSpec.waitingText} ${textSuffix}`);
+        $submit.prop('disabled', true);
+        const rfcv = getCookie('rfc_v');
+        const rsp = await fetch(`/page.php?sid=${queryParam}&rfcv=${rfcv}`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-requested-with': 'XMLHttpRequest',
+          },
+          body: JSON.stringify({
+            option: actionSpec.bodyParam,
+            receiver: parseInt(uid),
+            amount,
+          }),
+        });
+        const rawData = await rsp.text();
+        if (!rsp.ok) {
+          throw new Error(`Network error: ${rsp.status} ${rawData}`);
+        }
+        const data = JSON.parse(rawData);
+        if (data.success === true) {
           resolve();
         } else {
-          reject(new Error(`调账时收到系统错误消息: ${$result.text()}`));
+          reject(new Error(`Unexpected server response: ${rawData}`));
         }
+      } catch (err) {
+        reject(err);
       }
     });
-    resultObserver.observe($giveBlock[0], { childList: true, subtree: true });
   });
 }
 
-async function closePrompt($parent) {
-  const MAX_DELAY = 1000;
-  const DELAY_INCREMENT = 100;
-  let delay = 0;
-  // 关闭调账结果 (不知为何，有时需要多次尝试才能成功关闭)
-  // eslint-disable-next-line no-constant-condition
-  while (true) {
-    delay = Math.min(delay + DELAY_INCREMENT, MAX_DELAY);
-    await sleep(delay);
-    const $okay = $parent.find('.give-block .result a.okay');
-    if ($okay.length === 0 || !$okay.is(':visible')) {
-      break;
-    }
-    $okay[0].click();
-  }
-}
-
 async function start(action, uidMap) {
-  try {
-    $('.faction-controls-wrap .control-tabs').addClass('batbal-overlay');
-    $('.faction-controls-wrap .point-wrap').addClass('batbal-overlay');
-    const $moneyWrap = $('.faction-controls-wrap .money-wrap');
-    $moneyWrap.find('.give-block label[for="give-money"]').hide();
-    $('#batbal-ctrl-start').attr('disabled', true);
-    $('#batbal-ctrl-clear-cache').attr('disabled', true);
-    // Move the "CONFIRM" button to the same position as the "ADD MONEY" button
-    $moneyWrap.find('.give-block').css('position', 'relative');
-    $moneyWrap
-      .find('.give-block .action-confirm .btn-wrap')
-      .css('position', 'absolute')
-      .css('right', '0')
-      .css('bottom', '10px');
+  storeAction(action);
+  $('#batbal-ctrl-start').prop('disabled', true);
+  $('#batbal-ctrl-clear-data').prop('disabled', true);
 
+  try {
     while (action.next < action.uidAmounts.length) {
-      updateStatus(`请确认第 ${action.next + 1} 个人的调账，共计 ${action.uidAmounts.length} 人`);
+      updateStatus(`Current progress: ${action.next} / ${action.uidAmounts.length} done`);
+      const now = Date.now();
       const [uid, amount] = action.uidAmounts[action.next];
       const uidInfo = uidMap[uid] || {};
-      const name = uidInfo.name || '未知玩家';
-      await addMoney(uid, name, amount);
+      const name = uidInfo.name || 'Unknown player';
+      await addMoney({ uid, name, amount, actionType: action.actionType, assetType: action.assetType });
       action.next++;
-      await storeAction(action);
-      await closePrompt($moneyWrap);
+      storeAction(action);
       renderDetails(action, uidMap);
+      const elapsed = Date.now() - now;
+      if (elapsed < ACTION_INTERVAL_MS) {
+        await sleep(ACTION_INTERVAL_MS - elapsed);
+      }
     }
-
-    $moneyWrap.addClass('batbal-overlay');
-    await storeAction(null);
-    updateStatus('调账完成！');
+    storeAction(null);
+    updateStatus('All done!');
   } catch (err) {
     updateStatus(err);
   }
@@ -420,32 +408,40 @@ async function start(action, uidMap) {
 
 async function main() {
   try {
-    renderLinkOnOcPage();
-
-    const params = getParams();
-    if (!params) {
+    const parsedAction = parseAction();
+    const storedAction = GM_getValue(GM_VALUE_KEY, null);
+    if (storedAction === null && parsedAction === null) {
       return;
     }
-    const uidMap = await getUidMap();
-    await renderController(params);
 
-    const storedAction = await GM_getValue(GM_VALUE_KEY, null);
+    const uidMap = await getUidMap();
+    renderController();
     if (storedAction) {
-      $('#batbal-ctrl-detail-continue').show();
-      $('#batbal-ctrl-detail-continue a').attr('href', buildUrl(storedAction.uidAmounts));
-      $('.batbal-ctrl-detail-cached').show();
       renderDetails(storedAction, uidMap);
+      $('#batbal-ctrl-clear-data').prop('disabled', false);
+    }
+    if (parsedAction.error) {
+      throw new Error(parsedAction.error);
     }
 
-    const action = parseAction(params);
-    await checkAction(action);
-    $('#batbal-ctrl-detail-continue').hide();
-    $('.batbal-ctrl-detail-cached').hide();
-    renderDetails(action, uidMap);
-    $('#batbal-ctrl-start').removeAttr('disabled');
+    const action = checkAction(parsedAction, storedAction);
+    if (!storedAction) {
+      renderDetails(action, uidMap);
+    }
+    if (action.actionType === 'give') {
+      if (action.uidAmounts.some(([uid]) => !uidMap[uid]?.isInFaction)) {
+        throw new Error('Some players are not in the faction');
+      }
+      if (action.uidAmounts.some(([, amount]) => amount <= 0)) {
+        throw new Error('Amounts to give must be positive');
+      }
+    }
+
+    $('#batbal-ctrl-start').prop('disabled', false);
     $('#batbal-ctrl-start').on('click', () => start(action, uidMap));
   } catch (err) {
     updateStatus(err);
+    console.log('Unhandled exception from Batch Balance:', err);
   }
 }
 
