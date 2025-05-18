@@ -11,6 +11,8 @@
 // @supportURL  https://github.com/tobytorn/batch-balance
 // @license     MIT
 // @require     https://unpkg.com/jquery@3.7.0/dist/jquery.min.js
+// @downloadURL https://update.greasyfork.org/scripts/536376/Batch%20Balance.user.js
+// @updateURL   https://update.greasyfork.org/scripts/536376/Batch%20Balance.meta.js
 // ==/UserScript==
 
 // Usage:
