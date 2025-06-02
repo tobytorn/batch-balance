@@ -47,6 +47,27 @@ const ACTION_SPECS = {
 
 const $ = window.jQuery;
 
+const LOCAL_STORAGE_PREFIX = 'BATCH_BALANCE_';
+
+function getLocalStorage(key, defaultValue) {
+  const value = window.localStorage.getItem(LOCAL_STORAGE_PREFIX + key);
+  try {
+    return JSON.parse(value) ?? defaultValue;
+  } catch (err) {
+    return defaultValue;
+  }
+}
+
+function setLocalStorage(key, value) {
+  window.localStorage.setItem(LOCAL_STORAGE_PREFIX + key, JSON.stringify(value));
+}
+
+const isPda = window.GM_info?.scriptHandler?.toLowerCase().includes('tornpda');
+const [getValue, setValue] =
+  isPda || typeof window.GM_getValue !== 'function' || typeof window.GM_setValue !== 'function'
+    ? [getLocalStorage, setLocalStorage]
+    : [window.GM_getValue, window.GM_setValue];
+
 const STYLE = `
   .batbal-overlay {
     position: relative;
@@ -181,7 +202,7 @@ function getParams() {
 }
 
 function storeAction(action) {
-  GM_setValue(GM_VALUE_KEY, action);
+  setValue(GM_VALUE_KEY, action);
 }
 
 function parseAction() {
@@ -411,7 +432,7 @@ async function start(action, uidMap) {
 async function main() {
   try {
     const parsedAction = parseAction();
-    const storedAction = GM_getValue(GM_VALUE_KEY, null);
+    const storedAction = getValue(GM_VALUE_KEY, null);
     if (storedAction === null && parsedAction === null) {
       return;
     }
