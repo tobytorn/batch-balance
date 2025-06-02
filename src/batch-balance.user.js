@@ -28,6 +28,8 @@
 'use strict';
 
 function batchBalanceWrapper() {
+  console.log('Batch Balance starts');
+
   const ACTION_INTERVAL_MS = 1000;
   const GM_VALUE_KEY = 'batbal-action';
   const PROFILE_HREF_PREFIX = 'profiles.php?XID=';
@@ -282,7 +284,7 @@ function batchBalanceWrapper() {
         });
         clearInterval(interval);
         resolve(map);
-      }, 2000);
+      }, 200);
     });
   }
 
@@ -470,6 +472,7 @@ function batchBalanceWrapper() {
   }
 
   main();
+  console.log('Batch Balance ends');
 }
 
 if (document.readyState === 'loading') {
