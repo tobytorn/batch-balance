@@ -4,7 +4,7 @@
 // @description Distribute money or change balances for multiple faction members (Not supported on mobile)
 // @author      tobytorn [1617955]
 // @match       https://www.torn.com/factions.php?step=your*
-// @version     2.0.0
+// @version     2.0.1
 // @grant       GM_getValue
 // @grant       GM_setValue
 // @grant       GM_addStyle
